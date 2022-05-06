@@ -1,0 +1,213 @@
+---
+title: "R Notebook For DBMS Practicum 2 - Part 2"
+output: html_notebook
+Authors: HARSHITHA YEDDULA 
+Email: yeddula.h@northeastern.edu
+---
+
+# Task 2 Part 2 - Creating a MySQL database using a cloud MySQL instance and also connecting to local SQlite DB created in Task 1
+```{r}
+library(RMySQL)
+library(DBI)
+library(ggplot2)
+
+conn <-  DBI::dbConnect(RMySQL::MySQL(),
+  user = "admin",
+  password = rstudioapi::askForPassword("admin123"),
+  host = "practicum.ce5djxzipyp7.us-east-1.rds.amazonaws.com",
+  port = 3306,
+  dbname = "practicum"
+)
+```
+
+
+```{r}
+dbpath <- "C:/DBMS/SQL"  #Path of database
+dbfile <- "pubmed.db"                 #Name of database
+
+db <- dbConnect(RSQLite::SQLite(), paste0(dbpath, dbfile))
+```
+
+```{r}
+dbListTables(db)
+```
+
+
+#Task 2 Part3 - Creating star schema
+
+#Dropping Table AuthorFact table
+```{sql connection=conn}
+DROP TABLE IF EXISTS AuthorFact;
+```
+
+#Creating AuthorFact table
+```{sql connection = conn}
+CREATE TABLE AuthorFact
+( 
+AuthorId INTEGER PRIMARY KEY,
+LastName TEXT,
+FirstName TEXT,
+NumArticle INTEGER ,
+AvgArticle NUMERIC);
+```
+
+#Dropping Table JournalsDimension table
+```{sql connection=conn}
+DROP TABLE IF EXISTS JournalsDimension;
+```
+
+#Creating JournalsDimension table
+```{sql connection = conn}
+CREATE TABLE JournalsDimension
+( 
+Issue_Id INTEGER PRIMARY KEY,
+Title TEXT,
+Issue INTEGER,
+Volume INTEGER,
+PubDate date);
+```
+
+#Dropping Table ArticlesDimension table
+```{sql connection=conn}
+DROP TABLE IF EXISTS ArticlesDimension;
+```
+
+#Creating ArticlesDimension table
+```{sql connection = conn}
+CREATE TABLE ArticlesDimension
+( 
+ArticleId INTEGER PRIMARY KEY,
+ArticleTitle TEXT,
+Year DATE, 
+Month DATE);
+```
+
+#Dropping Table AuthorshipDimension table
+```{sql connection=conn}
+DROP TABLE IF EXISTS AuthorshipDimension;
+```
+
+#Creating AuthorshipDimension table
+```{sql connection = conn}
+CREATE TABLE AuthorshipDimension
+(
+AuthorId INTEGER PRIMARY KEY,
+ArticleId INTEGER NOT NULL,
+CONSTRAINT has FOREIGN KEY (ArticleId) REFERENCES ArticlesDimension (ArticleId),
+CONSTRAINT FOREIGN KEY (AuthorId) REFERENCES AuthorFact (AuthorId)
+);
+```
+
+#Dropping Table JournalOwnershipDimension table
+```{sql connection=conn}
+DROP TABLE IF EXISTS JournalOwnershipDimension;
+```
+
+#Creating JournalOwnershipDimension table
+```{sql connection = conn}
+CREATE TABLE JournalOwnershipDimension
+(
+ArticleId INTEGER NOT NULL,
+Issue_Id INTEGER NOT NULL,
+CONSTRAINT PK_Journal_Ownership PRIMARY KEY (ArticleId,Issue_Id), CONSTRAINT  FOREIGN KEY (ArticleId) REFERENCES ArticlesDimension (ArticleId),
+CONSTRAINT FOREIGN KEY (Issue_Id) REFERENCES JournalsDimension (Issue_Id) 
+);
+```
+
+#Reading tables from SQLite database and populating the data frames.
+```{r}
+Article_df =  dbReadTable(db, "Articles")
+Authors_df =  dbReadTable(db, "Authors")
+Journals_df =  dbReadTable(db, "Journals")
+Authorship_df =  dbReadTable(db, "Authorship")
+Journal_Ownership_df =  dbReadTable(db, "JournalOwnership")
+
+```
+
+#Populating tables using the data frames.
+```{r}
+dbWriteTable(conn,"Articles",Article_df , row.names=F,append=T)
+dbWriteTable(conn,"Authors",Authors_df , row.names=F,append=T)
+dbWriteTable(conn,"Journals",Journals_df , row.names=F,append=T)
+dbWriteTable(conn,"Authorship",Authorship_df , row.names=F,append=T)
+dbWriteTable(conn,"JournalOwnership",Journal_Ownership_df , row.names=F,append=T)
+
+```
+
+#Querying on AuthorsFact table
+```{r}
+Authors_Fact<-dbGetQuery(conn,"select AuthorId,LastName, FirstName,count(ArticleId) as NumArticle, ROUND(count(*)/count(distinct year),0) as AvgArticle
+from
+(select au.AuthorId,au.LastName, au.FirstName,Title,jo.Issue_Id,aus.ArticleId,ar.Year
+from 
+Articles AS ar inner join Authorship  AS aus  On aus.ArticleId =ar.ArticleId
+
+inner join Authors AS au On au.AuthorId=aus.AuthorId
+
+inner join JournalOwnership AS jo ON jo.ArticleId =aus.ArticleId
+inner join Journals AS j On j.Issue_Id =jo.Issue_Id
+
+Order by au.AuthorId) tb1
+group by AuthorId")
+```
+
+#Writing to table AuthorsFact
+```{r}
+dbWriteTable(conn,"AuthorsFact",Authors_Fact, row.names=F,append=T)
+```
+
+```{r}
+dbWriteTable(conn=conn,"AriclesDimension",value=Article_df, append= TRUE,row.names=FALSE)
+dbWriteTable(conn=conn,"AuthorsFact",value=Authors_Fact, append= TRUE,row.names=FALSE)
+dbWriteTable(conn=conn,"JournalsDimension",value=Journals_df , append= TRUE,row.names=FALSE)
+dbWriteTable(conn=conn,"AuthorshipDimension",value=Authorship_df ,append= TRUE,row.names=FALSE)
+dbWriteTable(conn=conn,"JournalOwnershipDimension",value=Journal_Ownership_df,append= TRUE,row.names=FALSE)
+```
+
+# Task 3 - queries using your MySQL data warehouse to populate a fictitious dashboard 
+
+#Getting Top 10 data
+```{r}
+Top10 <- dbGetQuery(conn,"select*
+from AuthorsFact
+order by NumArticle desc limit 10")
+```
+
+
+#Populating the Top 10 data
+```{r}
+ggplot(data = Top10, aes(x = FirstName, y=  NumArticle)) + geom_bar(position = 'dodge', stat = 'identity') + ggtitle("Top 10 Author's publications")
+```
+
+
+```{r}
+seasonal <- dbGetQuery(conn,"SELECT a.Quarter, COUNT(a.ArticleID) AS NumArticles
+FROM( SELECT Month,ArticleID,
+CASE 
+     WHEN Month = 1 THEN 'Quarter_1'
+     WHEN Month = 2 THEN 'Quarter_1'
+     WHEN Month = 3 THEN 'Quarter_1'
+     WHEN Month = 4 THEN 'Quarter_2'
+     WHEN Month = 5 THEN 'Quarter_2'
+     WHEN Month = 6 THEN 'Quarter_2'
+     WHEN Month = 7 THEN 'Quarter_3'
+     WHEN Month = 8 THEN 'Quarter_3'
+     WHEN Month = 9 THEN 'Quarter_3'
+     WHEN Month = 10 THEN 'Quarter_4'
+     WHEN Month = 11 THEN 'Quarter_4'
+     WHEN Month = 12 THEN 'Quarter_4'
+END AS Quarter
+FROM Articles) a 
+GROUP BY Quarter")
+```
+
+
+```{r}
+ggplot(data = seasonal, aes(x = Quarter, y= NumArticles )) + geom_bar(position = 'dodge', stat = 'identity') + ggtitle("The Number of publications for each Quarter")
+```
+
+#Disconneting the connections
+```{r}
+dbDisconnect(conn)
+dbDisconnect(db)
+```

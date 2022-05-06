@@ -1,0 +1,370 @@
+
+---
+title: "R Notebook For DBMS Practicum 1"
+output: html_notebook
+Authors: Harshita Yeddula
+---
+
+#Importing the Libraries and connecting to the remote server (AWS)
+```{r}
+library(dplyr)
+library(RMySQL)
+library(sqldf)
+library(dbplyr)
+
+con <- DBI::dbConnect(RMySQL::MySQL(), 
+  dbname = "dbmspracticum",
+  host = "dbmspracticum.clx781tgbh1l.us-east-1.rds.amazonaws.com",
+  user = "admin",
+  password = rstudioapi::askForPassword("admin123")
+)
+
+```
+
+#Creating required tables, airports, conditions and incidents with necessary primary keys and foreign keys.
+
+
+
+#Question 1 and Question 2 - Creating tables and loading csv data into data frame
+
+#Dropping table incidents if Exists
+```{sql connection=con}
+DROP TABLE IF EXISTS incidents
+```
+
+#Dropping table airports if Exists
+```{sql connection=con}
+DROP TABLE IF EXISTS airports
+```
+
+#Dropping table conditions if Exists
+```{sql connection=con}
+DROP TABLE IF EXISTS conditions
+```
+
+
+#Creating table conditions.
+```{sql connection=con}
+
+create table conditions(
+cid INTEGER NOT NULL primary key AUTO_INCREMENT,
+cond VARCHAR(200) NOT NULL,
+explanation VARCHAR(200) NOT NULL
+);
+
+```
+
+
+#Creating table airports
+```{sql connection=con}
+
+create table airports(
+aid INTEGER NOT NULL primary key AUTO_INCREMENT,
+airportName VARCHAR(200) NOT NULL,
+airportCode VARCHAR(200), 
+state VARCHAR(200)
+);
+
+```
+
+
+#Creating table incidents
+```{sql connection=con}
+
+CREATE Table incidents(
+iid INT NOT NULL AUTO_INCREMENT primary key,
+date DATE NOT NULL,
+origin INTEGER NOT NULL,
+airline VARCHAR(200) NOT NULL, 
+aircraft VARCHAR(200) NOT NULL,
+flightPhase VARCHAR(200) NOT NULL,
+impact BOOLEAN,
+cond INTEGER NOT NULL
+)
+
+```
+
+
+#Altering the table by setting the Foreign key
+```{sql connection=con}
+ALTER TABLE incidents
+ADD FOREIGN KEY (origin) REFERENCES airports(aid);
+
+```
+
+
+#Altering the table by setting the Foreign key
+```{sql connection=con}
+ALTER TABLE incidents
+ADD FOREIGN KEY (cond) REFERENCES conditions(cid);
+```
+
+
+
+#Loading the csv file into the Data Frame.
+```{r loadCSV}
+fn = "BirdStrikesData.csv"
+
+getwd()
+df.raw <- read.csv(file = fn,
+                   header = T,
+                   stringsAsFactors = F)
+```
+
+
+
+
+#Performing tasks that are required to load the tables like harmonizing the flight phases, removing the Military flights.
+```{r}
+library(tidyverse)
+library(lubridate)
+
+
+# Getting the data from the data frame that is required to insert into tables.
+df.need <- data.frame(date = df.raw$FlightDate, 
+                      airline = df.raw$Aircraft..Airline.Operator,
+                      aircraft = df.raw$Aircraft..Make.Model,
+                      flightPhase = df.raw$When..Phase.of.flight,
+                      impact = df.raw$Effect..Indicated.Damage,
+                      airportName = df.raw$Airport..Name,
+                      state = df.raw$Origin.State,
+                      condition = df.raw$Conditions..Sky)
+
+#Linking the airportName that is NULL with sentinel
+df.need$airline[which(df.need$airline =='')] <- 'sentinel'
+df.need$airportName[which(df.need$airportName == '')] <- 'sentinel'
+
+
+# Updating the impact as TRUE or FALSE based on damage caused or not for the impact field.
+df.need$impact <- ifelse(df.need$impact == 'Caused damage', 'TRUE', 'FALSE')
+
+
+# Harmonizing the flight phases.
+df.need$flightPhase[which(df.need$flightPhase == 'Approach' | 
+                            df.need$flightPhase == 'Landing Roll')] <- "landing"
+df.need$flightPhase[which(df.need$flightPhase == 'Climb' |
+                            df.need$flightPhase == 'Take-off run')] <- "takeoff"
+df.need$flightPhase[which(df.need$flightPhase == 'Descent')] <- "inflight"
+df.need$flightPhase[which(df.need$flightPhase == 'Taxi' | 
+                            df.need$flightPhase == 'Parked' | 
+                            df.need$flightPhase == '')] <- "unknown"
+df.need$date <- as.Date(mdy_hm(df.need$date))
+
+
+#Removing the incidents that has airline as MILTARY
+df.need$airline[df.need$airline == 'MILITARY'] <- NA
+df.omit <- df.need[!is.na(df.need$airline),]
+```
+
+
+
+
+#Creating the actual dataframes to insert into the tables.
+```{r}
+# Creating data frame for incidents table.
+df.incidents <- data.frame(iid = seq(1, nrow(df.omit)),
+                           date = df.omit$date,
+                           origin = 1,
+                           airline = df.omit$airline,
+                           aircraft = df.omit$aircraft,
+                           flightPhase = df.omit$flightPhase,
+                           impact = df.omit$impact,
+                           cond = 1)
+
+
+# Creating data frame for airports table.
+df.airportsR <- data.frame(airportName = df.omit$airportName,
+                          airportCode = "",
+                          state = df.omit$state)
+df.airportsR <- unique(df.airportsR[, 1:3])
+df.airports <- data.frame(aid = seq(1, nrow(df.airportsR)),
+                          airportName = df.airportsR$airportName,
+                          airportCode = "",
+                          state = df.airportsR$state)
+
+# Creating data frame for conditions table.
+df.conditionsR <- data.frame(condition = df.omit$condition,
+                             explanation = "")
+df.conditionsR <- unique(df.conditionsR[1])
+df.conditions <- data.frame(cid = seq(1, nrow(df.conditionsR)),
+                            condition = df.conditionsR$condition,
+                            explanation = "")
+```
+
+
+# Foreign keys Linking
+```{r}
+# Linking the foreign keys from incidents table for aid
+for (r in 1:nrow(df.incidents)) {
+  a <- df.airports$aid[which(df.airports$airportName == df.omit$airportName[r] &
+                               df.airports$state == df.omit$state[r])]
+  df.incidents$origin[r] <- a
+}
+
+# Linking the foreign keys from incidents table for cid
+for (r in 1:nrow(df.incidents)) {
+  b <- df.conditions$cid[which(df.conditions$condition == df.omit$condition[r])]
+  df.incidents$cond[r] <- b
+}
+```
+
+
+
+
+#Writing data into the incidents table.
+```{r}
+dbWriteTable(con, "incidents", df.incidents, overwrite = T, row.names = FALSE)
+```
+
+
+#Writing data into the airports table.
+```{r}
+
+dbWriteTable(con, "airports", df.airports, overwrite = T, row.names = FALSE)
+```
+
+
+#Writing data into the conditions table.
+```{r}
+dbWriteTable(con, "conditions", df.conditions, overwrite = T, row.names = FALSE)
+```
+
+
+
+#Question 3
+
+#Displaying parts of the data using R.
+```{r}
+
+
+dbGetQuery(con, "SELECT * from incidents Limit 20")
+
+dbGetQuery(con, "SELECT * from airports Limit 20")
+
+dbGetQuery(con, "SELECT * from conditions Limit 20")
+
+```
+
+
+
+#Question 4
+
+#Displayig number of bird strikes for each flight phase.
+```{sql connection=con}
+SELECT DISTINCT(flightPhase), count(iid) FROM incidents
+GROUP BY flightPhase;
+```
+
+
+#Question 5
+# Displaying FLight phases that has above average number of bird strike incidents.
+```{sql connection=con}
+SELECT DISTINCT(flightPhase), imp FROM (
+  SELECT DISTINCT(flightPhase), count(iid) as imp FROM incidents
+  GROUP BY flightPhase
+)as avg
+WHERE imp > (SELECT COUNT(iid)/count(distinct(flightPhase)) from incidents)
+```
+
+
+#Question 6
+# Displaying the average number of bird strike incidents per month.
+```{sql connection=con}
+SELECT DISTINCT(month(date)) as month, count(iid) as NumberOfIncidents, count(iid)/12 as AverageBirdStrikeIncidents FROM incidents
+GROUP BY month ORDER BY month ASC
+```
+
+
+
+#Question 7
+#In order to plot the graph I am jus displaying the number of bird strike incidents int he years 2005 to 2011.
+```{sql connection=con}
+select COUNT(iid), YEAR(date) as year from dbmspracticum.incidents where YEAR(date) >= 2005 and YEAR(date) <= 2011 group by year Order by year desc;
+
+```
+
+
+
+#Question 7
+#Showing the plot by displaying the year in x axis and number of bird strike incidents in that year in y axis.
+```{r}
+
+sqlCmd = "select COUNT(iid) as count, YEAR(date) as year from dbmspracticum.incidents 
+ group by year
+ having year >=2005 and year<=2011
+ Order by year desc;";
+
+rs2 = dbGetQuery(con, sqlCmd)
+
+
+plot(x=rs2$year, y=rs2$count, xlab ="Year", ylab ="Number of Bird Strikes", main="Bird Strikes by Year")
+
+lines(rs2$year, rs2$count, pch=18, col="blue", type="b", lty=2)
+
+legend(2005, 2011, legend=c("Line 1" ),
+       col=c("blue"), lty=1:2)
+```
+
+#Question 8
+#Dropping the procedure if exists.
+```{sql connection=con}
+DROP PROCEDURE IF EXISTS NewBirdStrikeIncident;
+```
+
+
+
+#Creating the procedure to insert a new data.
+```{sql connection=con}
+create procedure NewBirdStrikeIncident(
+	  IN	i_date				TEXT,
+    IN	i_airline			TEXT,
+    IN	i_aircraft			TEXT,
+    IN	i_flightPhase		TEXT,
+    IN	i_impact			TEXT,
+    IN	a_airportName		TEXT,
+    IN	a_state				TEXT,
+    IN	c_cond				TEXT)
+BEGIN
+  DROP TABLE IF EXISTS NBS;
+	CREATE TABLE NBS(
+	did INT NOT NULL,
+	date TEXT NOT NULL,
+	airline TEXT,
+	aircraft TEXT,
+	flightPhase TEXT,
+	impact TEXT,
+	airportName TEXT,
+	state TEXT,
+	cond TEXT,
+	PRIMARY KEY (did)
+	);
+	INSERT INTO NBS(did, date, airline, aircraft, flightPhase, impact, airportName, state, cond)
+	VALUES (did, i_date, i_airline, i_aircraft, i_flightPhase, i_impact, a_airportName, a_state, c_cond);
+	
+INSERT INTO airports ( airportName, state) 
+  SELECT airportName, state FROM NBS 
+  WHERE NOT EXISTS (SELECT * FROM airports 
+    WHERE airports.airportName = NBS.airportName);
+
+INSERT INTO incidents (date, origin, airline, aircraft, flightPhase, impact, cond)
+  SELECT date, airports.aid, airline, aircraft, flightPhase, impact, conditions.cid FROM NBS
+  INNER JOIN conditions ON NBS.cond = conditions.condition
+  INNER JOIN airports ON NBS.airportName = airports.airportName;
+  
+END
+```
+
+
+
+# Use Procedure NewBirdStrikeIncident to insert a new record into the database.
+```{sql connection=con}
+CALL NewBirdStrikeIncident ('2021-09-06','NEW AIRPORT','NEW-B-789','landing','TRUE','new','MA','No Cloud');
+    
+```
+
+
+# Check that the data is imported correctly into Table incidents.
+```{sql connection=con}
+select * from incidents where airline = "NEW AIRPORT"
+```
+

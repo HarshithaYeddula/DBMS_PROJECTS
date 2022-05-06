@@ -1,0 +1,237 @@
+
+---
+title: "R Notebook For DBMS Practicum 2 - Part 1"
+output: html_notebook
+Authors: HARSHITHA YEDDULA 
+Email: yeddula.h@northeastern.edu
+---
+
+
+## Task 1
+
+Creating tables for model.
+
+```{r}
+library(RSQLite)
+library(XML)
+library(dplyr)
+dbpath <- "C:/DBMS/SQL"  #Path of database
+dbfile <- "pubmed.db"                 #Name of database
+
+con <- dbConnect(RSQLite::SQLite(), paste0(dbpath, dbfile))
+```
+
+#Task 1 part 2 - Creating Tables for the Model. 
+
+
+#Dropping Table Authors
+```{sql connection=con}
+DROP TABLE IF EXISTS Authors;
+```
+
+#Creating table Author
+```{sql connection=con}
+CREATE TABLE Authors 
+( 
+AuthorId INTEGER PRIMARY KEY,
+LastName TEXT,
+FirstName TEXT,
+Initials TEXT, 
+Affiliation TEXT);
+```
+
+#Dropping table Articles
+```{sql connection=con}
+DROP TABLE IF EXISTS Articles;
+```
+
+#Creating table Articles
+```{sql connection=con}
+CREATE TABLE Articles
+( 
+ArticleId INTEGER PRIMARY KEY,
+ArticleTitle TEXT,
+Year date,
+Month date );
+```
+
+#Dropping table Journals
+```{sql connection=con}
+DROP TABLE IF EXISTS Journals;
+```
+
+#Creating table Journals
+```{sql connection=con}
+CREATE TABLE Journals (
+Issue_Id INTEGER PRIMARY KEY,
+Title TEXT, 
+Issue INTEGER,
+Volume INTEGER, 
+PubDate date )
+```
+
+
+#Task 1 part 3 - ERD
+
+```{r}
+knitr::include_graphics('https://github.com/HarshithaYeddula/Documents/blob/main/ERD.png')
+```
+
+#Task 1 part 4 - Realize the relational schema in SQLite
+
+#Dropping table Authorship
+```{sql connection=con}
+DROP TABLE IF EXISTS Authorship;
+```
+
+#Creating table Authorship
+```{sql connection=con}
+CREATE TABLE Authorship 
+( 
+ArticleId INTEGER NOT NULL,
+AuthorId INTEGER NOT NULL,
+CONSTRAINT PK_Authorship PRIMARY KEY (ArticleId,AuthorId),
+CONSTRAINT has FOREIGN KEY (ArticleId) REFERENCES Article (ArticleId), CONSTRAINT has FOREIGN KEY (AuthorId) REFERENCES Author (AuthorId) 
+);
+```
+
+#Dropping table JournalOwnership
+```{sql connection=con}
+DROP TABLE IF EXISTS JournalOwnership;
+```
+
+#Creating table JournalOwnership
+```{sql connection=con}
+CREATE TABLE JournalOwnership 
+( 
+ArticleId INTEGER NOT NULL,
+Issue_Id INTEGER NOT NULL,
+CONSTRAINT PK_Journal_Ownership PRIMARY KEY (ArticleId,Issue_Id), CONSTRAINT has FOREIGN KEY (ArticleId) REFERENCES Article (ArticleId), CONSTRAINT has FOREIGN KEY (Issue_Id) REFERENCES Journal (Issue_Id) ); 
+```
+
+
+#Task 1 part 5 - Loading and parsing the XML and writing it to the Tables.
+
+#Loading Provided XML Sample
+```{r}
+library(XML)
+path <- 'C:/DBMS/Practicum2'
+filename<-'pubmed_sample.xml'
+xmldoc <-xmlParse(file=paste(path,filename,sep="/"), validate=T)
+r <- xmlRoot(xmldoc)
+```
+
+## Load Journal XML to dataframe
+```{r}
+
+Volume<-xmlSApply(r,function(x)xmlValue(x[['MedlineCitation']][['Article']][['Journal']][['JournalIssue']][['Volume']]))
+
+Issue<-xmlSApply(r,function(x)xmlValue(x[['MedlineCitation']][['Article']][['Journal']][['JournalIssue']][['Issue']]))
+
+PubDate<-xmlSApply(r,function(x)xmlValue(x[['MedlineCitation']][['Article']][['Journal']][['JournalIssue']][['PubDate']]))
+
+Title<-xmlSApply(r,function(x)xmlValue(x[['MedlineCitation']][['Article']][['Journal']][['Title']]))
+
+```
+
+## Write Journals and JournalOwnership table
+```{r}
+df.Journal<-data.frame("Title"=Title,"Issue"=Issue,"Volume"=Volume,"PubDate"=PubDate) 
+df.Journal<-tibble::rowid_to_column(data.frame(df.Journal),"Issue_Id")
+dbWriteTable(con,"Journals",df.Journal, append=TRUE)
+df.Journal$ArticleId<-seq(1:19)
+dbWriteTable(con,"JournalOwnership",df.Journal[,c(6,1)], append=TRUE)
+```
+
+## Load Article XML to dataframe and write table
+```{r}
+ArticleTitle<-xmlSApply(r,function(x)xmlValue(x[["MedlineCitation"]][["Article"]][["ArticleTitle"]]))
+Year<-xmlSApply(r,function(x)xmlValue(x[["MedlineCitation"]][["DateCreated"]][["Year"]]))
+Month<-xmlSApply(r,function(x)xmlValue(x[["MedlineCitation"]][["DateCreated"]][["Month"]]))
+df.Article<-tibble::rowid_to_column(data.frame("ArticleTitle"=unique(ArticleTitle)), "ArticleId")
+df.Article$Year<-Year
+df.Article$Month<-Month
+dbWriteTable(con,"Articles",df.Article, append=TRUE)
+```
+
+# Load Author XML to Dataframe
+```{r}
+LastName<-c() 
+FirstName<-c() 
+Initials<-c() 
+Affiliation<-c() 
+ArticleId<-c()
+
+for (i in seq(1:length(names(r)))) { for (j in seq(1:length(names(r[[i]][['MedlineCitation']][['Article']][['AuthorList']])))) { LastName<-c(LastName,xmlValue(r[[i]][['MedlineCitation']][['Article']][['AuthorList']][[j]][['LastName']]) ) } }
+
+for (i in seq(1:length(names(r)))) { for (j in seq(1:length(names(r[[i]][['MedlineCitation']][['Article']][['AuthorList']])))) { Initials<-c(Initials,xmlValue(r[[i]][['MedlineCitation']][['Article']][['AuthorList']][[j]][['Initials']]) ) } }
+
+for (i in seq(1:length(names(r)))) { for (j in seq(1:length(names(r[[i]][['MedlineCitation']][['Article']][['AuthorList']])))) { FirstName<-c(FirstName,xmlValue(r[[i]][['MedlineCitation']][['Article']][['AuthorList']][[j]][['ForeName']]) ) } }
+
+for (i in seq(1:length(names(r)))) { for (j in seq(1:length(names(r[[i]][['MedlineCitation']][['Article']][['AuthorList']])))) { Affiliation<-c(Affiliation,xmlValue(r[[i]][['MedlineCitation']][['Article']][['AuthorList']][[j]][['Affiliation']]) ) } }
+
+for (i in seq(1:length(names(r)))) { for (j in seq(1:length(names(r[[i]][['MedlineCitation']][['Article']][['AuthorList']])))) {ArticleId<-c(ArticleId,i)}}
+
+df.Author<-data.frame('LastName'=LastName,'FirstName'=FirstName,'Initials'=Initials,'Affiliation'=Affiliation,'ArticleId'=ArticleId) 
+colnames(df.Author)
+
+```
+
+```{r}
+df.Author1<-df.Author %>% distinct(LastName, .keep_all=TRUE)
+```
+
+```{r}
+s<- df.Author %>% distinct(LastName, .keep_all=TRUE)
+```
+
+```{r}
+df.Author1<-tibble::rowid_to_column(data.frame(s,"AuthorId"))
+names(df.Author1)[1] <- "AuthorId"
+```
+
+
+```{r}
+dbWriteTable(con,'Authors',df.Author1[,-c(7,6)], append=TRUE)
+```
+
+
+```{r}
+df.Author<-tibble::rowid_to_column(data.frame(df.Author,"AuthorId"))
+names(df.Author)[1] <- "AuthorId"
+```
+
+```{r}
+nm1 <- with(df.Author, paste(LastName))
+df.Author$AuthorId <- match(nm1, unique(nm1))
+```
+
+```{r}
+dbWriteTable(con,"Authorship",df.Author[,c(6,1)], append=TRUE)
+```
+
+```{sql connection=con}
+select * from Articles
+```
+
+```{sql connection=con}
+select * from Authors
+```
+
+```{sql connection=con}
+select * from Journals
+```
+
+```{sql connection=con}
+select * from Authorship
+```
+
+```{sql connection=con}
+select * from JournalOwnership
+```
+
+```{r}
+dbDisconnect(con)
+```
+
+
